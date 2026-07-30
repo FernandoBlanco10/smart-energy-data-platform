@@ -1,0 +1,33 @@
+# Secretos y config local — nunca versionar
+.env
+*.tfvars
+!*.tfvars.example
+terraform.tfstate
+terraform.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+override.tf
+
+# Airflow runtime (se genera al levantar el stack)
+airflow/logs/
+airflow/plugins/__pycache__/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Spark / checkpoints locales
+**/_checkpoint/
+**/*.crc
+**/_SUCCESS
+
+# Datos crudos pesados (no versionar datasets grandes)
+data/raw/
+*.csv
+!ingestion/sample_data/*.csv
+
+# Sistema
+.DS_Store
