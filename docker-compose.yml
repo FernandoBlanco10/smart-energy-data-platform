@@ -1,5 +1,3 @@
-version: "3.8"
-
 # ---------------------------------------------------------------------------
 # Entorno local completo: Kafka en modo KRaft (+UI), Postgres, Airflow.
 # Justificación "Docker Compose vs instalación nativa": docs/architecture-decisions.md -> ADR-002.
@@ -66,6 +64,30 @@ services:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
 
+  # --- Emula S3 en tu máquina: Terraform (infra/terraform/) aprovisiona acá,
+  # sin cuenta de AWS ni costo. Ver infra/terraform/README.md.
+  # Pineado a 4.4.0 (última release "community", sin cuenta) a propósito:
+  # desde 2026.3.0 LocalStack unificó la imagen community+pro y exige
+  # LOCALSTACK_AUTH_TOKEN (cuenta gratuita en app.localstack.cloud) incluso
+  # para arrancar. Va contra el objetivo del proyecto de cero fricción/cuentas
+  # externas — si en algún momento querés las features nuevas, la alternativa
+  # es crear la cuenta gratis y setear LOCALSTACK_AUTH_TOKEN acá. ---
+  localstack:
+    image: localstack/localstack:4.4.0
+    container_name: localstack
+    ports:
+      - "4566:4566"   # edge port: todos los servicios de AWS emulados salen por acá
+    environment:
+      SERVICES: s3
+      DEBUG: 0
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   # --- Base de datos de metadatos de Airflow (no es parte del Lakehouse) ---
   postgres:
     image: postgres:16
@@ -77,9 +99,16 @@ services:
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
+      # Antes decía "-U airflow" hardcodeado — si cambiás AIRFLOW_DB_USER en .env
+      # queda desalineado. También le doy más margen (start_period) porque en el
+      # primer arranque, con el volumen recién creado, Postgres hace initdb y
+      # se reinicia una vez internamente antes de quedar listo — si el healthcheck
+      # justo cae en ese reinicio y se queda sin retries, se reporta como fallido.
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER} -d ${AIRFLOW_DB_NAME}"]
       interval: 5s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # --- Orquestación: ADR-007. Corre una vez, prepara la DB y crea el usuario admin ---
   airflow-init:
@@ -123,3 +152,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  localstack-data:

@@ -1,0 +1,26 @@
+# Copiá este archivo a `override.tf` (ya está en .gitignore) SOLO si vas a
+# correr `terraform` directo. Si usás `tflocal` (recomendado, ver README.md
+# de esta carpeta) no hace falta este archivo — tflocal genera este mismo
+# override automáticamente y lo borra al terminar.
+#
+# Terraform tiene un mecanismo de "override": un archivo llamado override.tf
+# fusiona/reemplaza argumentos de un bloque ya definido en otro .tf (acá,
+# el "provider aws" de versions.tf) sin tener que tocar ese archivo.
+
+provider "aws" {
+  region = var.aws_region
+
+  # Credenciales falsas: LocalStack no valida nada, pero el provider de AWS
+  # igual las exige para no fallar temprano.
+  access_key = "test"
+  secret_key = "test"
+
+  skip_credentials_validation = true
+  skip_metadata_api_check     = true
+  skip_requesting_account_id  = true
+  s3_use_path_style           = true # LocalStack no soporta virtual-hosted-style S3
+
+  endpoints {
+    s3 = "http://localhost:4566"
+  }
+}

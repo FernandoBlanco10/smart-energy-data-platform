@@ -4,7 +4,12 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      # v6.0 es GA desde 2025 y es la rama activa de desarrollo (v5.x quedó en
+      # mantenimiento). No lo pude correr yo mismo (sin acceso a terraform/red
+      # en este entorno) — al hacer `terraform init` en tu máquina, si algún
+      # recurso de main.tf da error de sintaxis, esa es la primera señal de que
+      # cambió entre v5 y v6; bajar a "~> 5.0" es el plan B.
+      version = "~> 6.0"
     }
   }
 
