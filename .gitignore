@@ -29,5 +29,10 @@ data/raw/
 *.csv
 !ingestion/sample_data/*.csv
 
+# Lakehouse local (Bronze/Silver/Gold) — datos generados, no código
+streaming/lakehouse/
+derby.log
+metastore_db/
+
 # Sistema
 .DS_Store

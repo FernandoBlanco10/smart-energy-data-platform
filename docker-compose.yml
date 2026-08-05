@@ -46,6 +46,13 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      # Sin esto, cada reinicio del contenedor borra todos los tópicos y sus
+      # mensajes — nos pasó (ver build-log.md, 2026-08-05). El AdminClient de
+      # Spark no auto-crea tópicos como sí hacen los productores al publicar,
+      # así que un broker "limpio" rompe bronze_stream.py hasta que alguien
+      # vuelva a producir.
+      - kafka-data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
       interval: 10s
@@ -153,3 +160,4 @@ services:
 volumes:
   postgres-db-volume:
   localstack-data:
+  kafka-data:

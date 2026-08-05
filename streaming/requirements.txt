@@ -1,0 +1,9 @@
+# Bajado de Spark 4.0.3/Delta 4.0.0 (Scala 2.13) a esta combinación el
+# 2026-08-05: en Windows, el repo comunitario de winutils.exe más usado
+# (cdarlint/winutils) no tiene binarios para Hadoop 3.4.0, que es lo que
+# empaqueta Spark 4.0.x — sin eso, Spark no puede ni arrancar en Windows.
+# Spark 3.5.x empaqueta Hadoop 3.3.4, y sí hay winutils para esa línea.
+# Ver .context/build-log.md para el detalle completo del cambio.
+pyspark==3.5.8
+delta-spark==3.3.2
+python-dotenv>=1.0.1
