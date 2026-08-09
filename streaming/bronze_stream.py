@@ -26,7 +26,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from pyspark.sql.functions import col, current_timestamp, from_json
+from pyspark.sql.functions import col, current_timestamp, from_json, to_date
 from pyspark.sql.utils import StreamingQueryException
 
 from common.logging_config import setup_logger
@@ -66,10 +66,18 @@ def start_bronze_query(spark, *, topic: str, schema, bootstrap_servers: str, bas
         )
         .select("data.*", "kafka_topic", "kafka_partition", "kafka_offset", "kafka_timestamp")
         .withColumn("ingested_at", current_timestamp())
+        # Partición física por fecha de INGESTA, no de evento. Bronze es la
+        # zona de aterrizaje: acabamos de aprender con el bug de Silver que
+        # el tiempo de evento puede venir desordenado (backfills, CSVs no
+        # ordenados, reintentos). ingest_date es monótona por definición
+        # (siempre "ahora"), así que particionar por ella nunca se rompe,
+        # sin importar qué tan desordenados vengan los datos de origen.
+        .withColumn("ingest_date", to_date(col("ingested_at")))
     )
 
     query = (
         parsed.writeStream.format("delta")
+        .partitionBy("ingest_date")
         .option("checkpointLocation", checkpoint_path)
         .outputMode("append")
         .trigger(processingTime=TRIGGER_INTERVAL)

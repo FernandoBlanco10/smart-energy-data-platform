@@ -25,9 +25,16 @@ Por cada fase, respondé estas cuatro preguntas en 2-4 líneas cada una. No copi
 ## Fase 2 — Streaming, Lakehouse e ingesta batch
 
 - **¿Qué entendí que antes no entendía?**
+  Ahora entendí cómo opera Kafka, cuál es el trabajo de Kafka y el de Spark. No había aterrizado bien los conceptos de offset, partición, cluster, broker pero ahora ya entiendo cómo se presentan en el proyecto. Igual cómo Spark trata los datos que llegan tarde, cómo se usan las windows y las watermarks para recuperar datos tardíos.
+
 - **¿Qué error cometí y cómo lo resolví?**
+  Cometí error al no analizar tan profundamente por qué el porcentaje de datos filtrados incrementó. Igual fue error al bajar Docker y volverlo a subir, debo tener bien mapeados esos cambios y cómo afectan a un código que lee un dataset desde el principio.
+
 - **¿Qué decisión de arquitectura cuestioné o cambié, y por qué?**
+  El acomodo de carpetas en Bronze y Silver: agregué particionado físico en las dos capas, pero con un criterio distinto en cada una a propósito. Bronze se particiona por fecha de ingestión (`ingest_date`) — cuándo llegó el dato a mi sistema, no cuándo ocurrió el evento — porque ya sé que el tiempo de evento puede venir desordenado, y así nunca hay que tocar particiones viejas. Silver en cambio particiona por columnas de negocio (`city` en weather, `event_year` en energy), pensado para cómo se va a consultar después, no para cuándo llegó.
+
 - **Si me preguntan "explicame esta fase en 30 segundos", ¿qué digo?**
+  Esta fase es el corazón del flujo del pipeline, tener los datos crudos de alguna manera como se esperan para poder procesarlos y mantenerlos consistentes en la capa Silver. No solo es de procesarlos una vez, sino monitorear, testear y confirmar que ambas capas trabajan bien para continuar con el pipeline. Se debe ser muy cuidadoso con dejar pasar datos corruptos por temas de optimización, eficiencia y limpieza en los datos que ya se ocuparán para la analítica de negocio. Mantener el control en estas dos etapas es fundamental porque es la parte sucia del trabajo de un pipeline; teniendo estas dos capas resueltas, lo demás te deja más tranquilo para trabajar con datos limpios.
 
 ---
 

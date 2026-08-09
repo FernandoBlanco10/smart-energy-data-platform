@@ -187,6 +187,104 @@ Primer intento de correr `bronze_stream.py` en tu máquina (Windows) — tres fa
 
 ---
 
+## 2026-08-05 — Fase 2: Spark Structured Streaming → Delta Lake (capa Silver)
+
+**Contexto:** segundo job de Spark — lee Bronze (no Kafka) y escribe la versión limpia.
+
+**Se creó:**
+- `streaming/common/quality_rules.py`: rangos válidos (`WEATHER_RANGES`, `ENERGY_MW_RANGE`) centralizados — los va a usar también el test de calidad de la task 8, para no tener el mismo número mágico en dos archivos.
+- `streaming/silver_stream.py`: lee `bronze/weather` y `bronze/energy` como streams de Delta (no de Kafka — desacopla Silver de la retención del tópico), tipa el timestamp con `to_timestamp`, deduplica con `dropDuplicatesWithinWatermark` (Spark 3.5+, más simple que el patrón viejo de watermark+dropDuplicates), y filtra a los rangos de `quality_rules.py`.
+- `streaming/verify_silver.py`: como `verify_bronze.py`, más un cálculo de cuántas filas se descartaron en la limpieza (Bronze count - Silver count).
+
+**Decisión de diseño — Silver lee de Bronze, no de Kafka de nuevo:** si hay que reprocesar Silver por un bug de limpieza, Bronze ya tiene todo el historial — no depende de la retención de Kafka. Es el patrón estándar de arquitectura medallion.
+
+**Decisión de diseño — watermark de 10 minutos es tiempo de evento, no de reloj:** para `energy`, cada fila sucesiva salta 1 hora entera en su propio timestamp (son datos históricos reproducidos rápido) — una ventana chica alcanza para atrapar reintentos reales sin acumular estado de más.
+
+**Límite de esta sesión:** mismo que Bronze — sin Spark en el sandbox, solo validado por `py_compile`. A diferencia de Bronze, esta vez no tuve que adivinar versiones (ya está resuelto desde la fase anterior), así que el riesgo de fricción nueva debería ser menor — pero el patrón de `dropDuplicatesWithinWatermark` es nuevo en este proyecto, sin probar en la práctica todavía.
+
+**Actualización — bug real encontrado con datos, no con la ejecución.** Primera corrida: `verify_silver.py` mostró weather en 0% descartado (esperable) pero energy en 12.9% descartado (1043 → 908 filas) — sospechoso, porque el dataset debería tener casi cero duplicados reales. Se investigó el CSV directamente: `PJME_hourly.csv` **no está ordenado cronológicamente de punta a punta** (6041 "retrocesos" verificados con un script — la fila siguiente tiene fecha anterior a la actual), aunque solo tiene 4 timestamps exactamente duplicados (por el cambio de horario de otoño en EE. UU., un patrón conocido de este dataset).
+
+Causa real: el watermark de 10 minutos que usaba `clean_energy()` no solo limpia estado viejo — en Structured Streaming, cualquier fila que llegue con un `event_time` más viejo que `(máximo visto - watermark)` se descarta directamente, tratándola como "dato tarde". Con un CSV que salta hacia atrás en el tiempo constantemente, eso tiraba filas válidas, no duplicados.
+
+**Fix:** `clean_energy()` ya no usa watermark — usa `dropDuplicates()` simple. Es seguro acá porque `energy-stream` es un stream **acotado** (el CSV se termina), a diferencia de `weather-stream` que es infinito mientras el productor corra. Con ~145k filas como techo, el estado que Spark tiene que recordar para deduplicar es trivial en memoria, así que no purgarlo nunca (la desventaja de no tener watermark) no es un problema real acá. `clean_weather()` se queda con el watermark — ahí sí es un stream infinito y si no se libera estado viejo, crece para siempre.
+
+**Para correrlo:** con `bronze_stream.py` corriendo y habiendo escrito al menos un micro-batch:
+```bash
+cd streaming
+python silver_stream.py       # otra terminal
+python verify_silver.py       # para confirmar, en una más
+```
+
+---
+
+## 2026-08-08 — Fase 2: particionado físico en Bronze y Silver
+
+**Contexto:** hasta acá `bronze_stream.py` y `silver_stream.py` escribían cada tabla Delta como una sola carpeta plana — sin `partitionBy()`. Funcionaba, pero no había nada que "observar" en el filesystem, y en un dataset real sin partición Spark tiene que leer todos los archivos aunque la query pida un solo día o una sola ciudad.
+
+**Se agregó:**
+- `bronze_stream.py`: columna `ingest_date` (`to_date(ingested_at)`) + `.partitionBy("ingest_date")`. Partición por tiempo de **llegada**, no de evento — a propósito, porque ya sabemos (bug de Silver arriba) que el tiempo de evento puede venir desordenado. `ingest_date` es siempre monótona (es "ahora"), así que particionar por ella nunca se rompe sin importar qué tan sucio venga el dato de origen. Es el patrón estándar de una zona de aterrizaje ("landing zone").
+- `silver_stream.py`: `clean_weather()` particiona por `city` (5 valores fijos, PJME/OWM). `clean_energy()` agrega la columna `event_year` (`year(event_time)`) y particiona por ella — PJME cubre 2002-2018, así que año da ~16 carpetas de tamaño razonable (particionar por día con datos horarios hubiera dado miles de carpetas chiquitas, el "small file problem"). Estas sí son particiones de **negocio**: pensadas para cómo alguien va a consultar Silver después ("dame Baltimore", "dame 2015"), no para cuándo llegó el dato.
+- `ingestion/energy_producer.py`: `SECONDS_PER_ROW` ahora lee `ENERGY_SECONDS_PER_ROW` del entorno (default 1.0, sin cambio de comportamiento). A 1 fila/segundo, publicar el CSV completo (145,367 filas) tarda ~40 horas — para observar en minutos cómo se van formando carpetas `event_year=.../` en Silver hace falta acelerarlo puntualmente.
+
+**Tres conceptos de "partición" distintos en este pipeline, para no confundirlos:**
+1. **Partición de Kafka** (paralelismo de mensajería): cuántas particiones tiene un tópico, cómo Spark las consume. Se observa en Kafka UI (`localhost:8085`) o `kafka-topics.sh --describe`.
+2. **Partición de Spark en memoria** (`spark.sql.shuffle.partitions`, hoy en 4): paralelismo de cómputo dentro de un job. Se observa en la Spark UI (`localhost:4040`, activa mientras `bronze_stream.py`/`silver_stream.py` corren) — pestaña Stages, columna Tasks.
+3. **Partición de Delta Lake en disco** (`partitionBy`, lo agregado hoy): cómo se organizan los archivos Parquet en subcarpetas Hive-style (`event_year=2015/part-...parquet`). Se observa directamente en el filesystem.
+
+**Para correrlo desde cero:**
+```bash
+# 1. Detener todo lo que esté corriendo (Ctrl+C en cada terminal)
+docker compose down -v          # borra volúmenes: kafka-data, postgres-db-volume, localstack-data
+rm -rf streaming/lakehouse       # borra bronze/, silver/ y todos los checkpoints
+docker compose up -d
+docker compose ps                # esperar a que todo esté healthy
+
+# 2. Productores (una terminal cada uno)
+cd ingestion
+python weather_producer.py
+ENERGY_SECONDS_PER_ROW=0.02 python energy_producer.py   # acelerado solo para este ejercicio
+
+# 3. Bronze (otra terminal)
+cd streaming
+python bronze_stream.py
+
+# 4. Silver (otra terminal)
+cd streaming
+python silver_stream.py
+
+# 5. Verificar (otra terminal, cuando quieras un snapshot)
+cd streaming
+python verify_silver.py
+```
+
+**Dónde mirar mientras corre:** Kafka UI en `localhost:8085` (particiones y mensajes por tópico); Spark UI en `localhost:4040` (tasks por stage = shuffle partitions); `ls -R streaming/lakehouse/bronze/weather` y `ls -R streaming/lakehouse/silver/energy` (carpetas `ingest_date=`/`city=`/`event_year=` apareciendo a medida que llegan datos nuevos).
+
+---
+
+## 2026-08-08 — Fase 2: cierre de Silver — el 26.3% descartado en energy también era real, y correcto
+
+**Contexto:** después del fix del watermark, `verify_silver.py` mostró weather en 0% descartado (esperado) pero energy subió a 26.3% (peor que el 12.9% original) — parecía que el fix había empeorado las cosas.
+
+**Diagnóstico:** sin acceso a Spark/Parquet en mi sandbox (PyPI está bloqueado por la política de red del workspace, no pude instalar `pyarrow`), se armó `streaming/debug_energy_duplicates.py` para que el usuario lo corriera con su propio PySpark. Agrupa Bronze/energy por `timestamp` y muestra los `kafka_offset` de cada grupo repetido.
+
+**Resultado:** 949 timestamps con exactamente 2 apariciones cada uno, y en todos los casos la diferencia entre los dos offsets ronda los ~949 (ej. `[0, 949]`, `[2, 951]`, `[7, 956]`). Ese patrón consistente es la firma de un **reinicio único** de `energy_producer.py` a mitad de la sesión (por `docker compose down -v` o por recuperarse del `UnknownTopicOrPartitionException`) — como el productor no persiste ningún cursor de progreso, cada reinicio vuelve a leer el CSV desde la fila 1, republicando las mismas filas de negocio con offsets nuevos.
+
+**Conclusión:** `dropDuplicates(["grid_region", "event_time"])` está correcto. El 26.3% no era pérdida de datos — era la capa de Silver descartando duplicados genuinos causados por reinicios del productor durante el debugging de esta sesión, exactamente el escenario para el que existe esta capa. Task 7 (Silver) queda cerrada con esta validación.
+
+**Nota para producción real (no implementado, fuera de alcance de este proyecto):** un productor de nivel profesional normalmente persistiría su posición (ej. guardar el número de fila ya publicada, o usar Kafka idempotent producer + claves) para no reprocesar desde cero en cada reinicio. Acá se dejó así a propósito — sirvió justamente para probar que Silver es robusto ante este tipo de duplicado real.
+
+---
+
+## 2026-08-09 — Fase 2: task 8, tests de calidad de datos en Silver
+
+**Se creó:** `streaming/test_silver_quality.py` — script batch independiente, no forma parte del pipeline de streaming. Reutiliza `common/quality_rules.py` (mismas reglas que usa `silver_stream.py` al limpiar) pero las vuelve a chequear por separado sobre Silver ya escrito: sin nulls en columnas clave, valores dentro de rango físico, unicidad de la clave de negocio. Termina con código de salida 1 si algo falla — pensado para poder engancharse a un CI real en el futuro.
+
+**Resultado de la primera corrida real, con el stack completo corriendo (productores + bronze + silver activos al mismo tiempo):** 14/14 checks OK, incluida la unicidad — confirmación adicional de que el dedup de Silver sigue sosteniendo la invariante incluso con datos llegando en simultáneo.
+
+Fase 2 queda funcionalmente completa: productores → Kafka → Bronze (particionado por `ingest_date`) → Silver (particionado por `city`/`event_year`, deduplicado, validado) → test de calidad independiente, todo verificado con datos reales, no solo con `py_compile`.
+
+---
+
 ## Plantilla reutilizable para el próximo proyecto
 
 Lo transferible de esta fase, más allá de este proyecto puntual:

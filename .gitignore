@@ -7,7 +7,6 @@ terraform.tfstate.backup
 .terraform/
 .terraform.lock.hcl
 override.tf
-
 # Airflow runtime (se genera al levantar el stack)
 airflow/logs/
 airflow/plugins/__pycache__/
@@ -33,6 +32,9 @@ data/raw/
 streaming/lakehouse/
 derby.log
 metastore_db/
+
+# Logs de ejecución — se regeneran en cada corrida, no aportan como código
+**/logs/*.log
 
 # Sistema
 .DS_Store

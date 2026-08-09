@@ -36,7 +36,13 @@ logger = setup_logger("energy_producer")
 
 TOPIC = "energy-stream"
 GRID_REGION = "PJME"
-SECONDS_PER_ROW = 1.0
+# 1.0 = "1 hora real de consumo = 1 segundo simulado" (ver docstring). A ese
+# ritmo, publicar el CSV completo (145,367 filas) tarda ~40 horas. Para
+# ejercicios de observación (ej. ver cómo se forman las particiones por año
+# en Silver) sirve acelerarlo con ENERGY_SECONDS_PER_ROW=0.02 (~2000 filas
+# en menos de un minuto) sin tocar el comportamiento por defecto del resto
+# del proyecto.
+SECONDS_PER_ROW = float(os.environ.get("ENERGY_SECONDS_PER_ROW", "1.0"))
 DEFAULT_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "PJME_hourly.csv")
 
 # El CSV de Kaggle (robikscube/hourly-energy-consumption) trae el timestamp
