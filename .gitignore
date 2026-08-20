@@ -36,5 +36,15 @@ metastore_db/
 # Logs de ejecución — se regeneran en cada corrida, no aportan como código
 **/logs/*.log
 
+# dbt — config local con rutas de tu máquina, y artefactos generados
+transformation/profiles.yml
+transformation/dbt_project/target/
+transformation/dbt_project/dbt_packages/
+transformation/dbt_project/logs/
+transformation/dbt_project/spark-warehouse/
+
+# Catálogo DuckDB del agente NL→SQL — se regenera con build_gold_catalog.py
+transformation/gold.duckdb
+
 # Sistema
 .DS_Store

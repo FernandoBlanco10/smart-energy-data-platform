@@ -285,6 +285,102 @@ Fase 2 queda funcionalmente completa: productores → Kafka → Bronze (particio
 
 ---
 
+## 2026-08-09 — Fase 3: scaffold de dbt sobre Silver (dbt-spark, modo session)
+
+**Contexto:** ADR-006 ya había decidido dbt para transformación, pero no el motor. Se decidió (ADR-009, con el usuario eligiendo entre dos opciones presentadas) `dbt-spark` en modo `session` sobre `dbt-duckdb` — reutiliza el Spark+Delta ya armado en Fase 2, cero herramientas nuevas.
+
+**Se creó:**
+- `transformation/requirements.txt` — `dbt-core==1.12.0`, `dbt-spark[session]==1.11.0`. Verificadas como último release estable en PyPI a la fecha (ambas publicadas el mismo día, 2026-07-16 — probable que sea la pareja pensada para ir junta).
+- `transformation/dbt_project/dbt_project.yml` — con `on-run-start` que registra `silver_weather`/`silver_energy` como tablas externas Delta (`CREATE TABLE IF NOT EXISTS ... USING DELTA LOCATION ...`) antes de cada corrida.
+- `transformation/dbt_project/models/staging/sources.yml` — define esas dos tablas como `source` de dbt.
+- `transformation/spark-defaults.conf` + `profiles.yml.example` — ver más abajo, el punto de fricción real de esta fase.
+- `.gitignore` actualizado: `transformation/profiles.yml` (config local, como `.env`) y artefactos de dbt (`target/`, `dbt_packages/`, `logs/`).
+
+**Problema real anticipado (todavía sin confirmar con ejecución):** dbt no lee Delta directamente — necesita que las tablas existan en el catálogo (Hive metastore) de la SparkSession, algo que Databricks/Unity Catalog resuelve solo pero que acá hay que armar a mano con `on-run-start`. Peor: el modo `method: session` de `dbt-spark` arma su propia SparkSession internamente, sin exponer en `profiles.yml` un lugar para pasarle `spark.jars.packages` (necesario para que Spark sepa qué es Delta). Como una SparkSession es un singleton por JVM, no se puede "inyectar" Delta después de que dbt ya la creó.
+
+**Solución:** `spark-defaults.conf` con `spark.jars.packages`/`spark.sql.extensions`/`spark.sql.catalog.spark_catalog`, y la variable de entorno `SPARK_CONF_DIR` apuntando a esa carpeta. PySpark lee ese archivo automáticamente al arrancar *cualquier* SparkSession, sin importar qué código la crea — es el mismo mecanismo que usa un cluster Spark real en producción para que toda la config de jars/extensiones sea uniforme entre apps, en vez de que cada script la hardcodee (como sí hace `streaming/common/spark_session.py`, a propósito, porque ese código sí controla el builder directamente).
+
+**Límite de esta sesión:** todo lo anterior es diseño razonado, no ejecutado — sin dbt/Spark en mi sandbox, la primera prueba real es que el usuario corra `dbt debug` desde `transformation/dbt_project/` con las variables de entorno del README seteadas. Es zona de fricción esperable (Windows + JVM + classpath), mismo tipo de problema que winutils en Fase 2.
+
+**Actualización — funcionó a la primera.** `dbt debug` resolvió el jar de Delta vía Ivy (mismo mecanismo que Bronze/Silver, disparado esta vez por `spark-defaults.conf` + `SPARK_CONF_DIR`) y pasó el connection test. El truco de configurar Delta por fuera de `profiles.yml` para el modo `session` quedó validado con ejecución real, no solo en teoría. Task 15 cerrada.
+
+---
+
+## 2026-08-11 — Fase 3: modelo intermedio — el join clima+consumo no es por fecha
+
+**Problema real de diseño, detectado antes de escribir código:** el roadmap pedía "unir clima y consumo por ventana temporal", asumiendo que ambas fuentes viven en la misma línea de tiempo. No es así: `weather-stream` es en vivo (event_time = fecha de hoy), `energy-stream` es el histórico PJME 2002-2018 reproducido como stream (event_time = fecha real del CSV). Un join por timestamp exacto siempre da vacío — nunca hay una fila de weather de 2026 que coincida con una de energy de 2007.
+
+**Decisión (con el usuario eligiendo entre dos opciones):** unir por `HOUR(event_time)` (0-23) en vez de por fecha exacta — comparar el patrón típico de consumo por hora del día contra el patrón típico de temperatura por hora del día, sin importar el año. Se descartó conseguir un dataset de clima histórico real 2002-2018 para poder unir por fecha exacta: es un desvío grande de alcance (nueva fuente, nueva ingesta) fuera de lo planeado para esta fase.
+
+**Se creó:**
+- `int_energy_hourly.sql` — `LAG`/`LEAD` hora a hora sobre consumo, promedio móvil de 24 horas (`ROWS BETWEEN 23 PRECEDING AND CURRENT ROW`), más `hour_of_day`.
+- `int_weather_readings.sql` — mismo patrón pero `PARTITION BY city` (weather no llega en grilla horaria, llega cada ~2 min), promedio móvil de 5 lecturas en vez de 24 horas.
+- `int_hourly_climate_demand_pattern.sql` — el join real: agrega cada fuente por `hour_of_day` y las une con `FULL OUTER JOIN` (a propósito, no `INNER JOIN`, para que sea visible si weather todavía no cubre las 24 horas del día — los conteos `n_energy_readings`/`n_weather_readings` lo dejan explícito en vez de esconder filas).
+
+**Límite de esta sesión:** sin ejecutar todavía — sintaxis de Jinja/YAML validada, pero la prueba real es `dbt build` con el productor de weather habiendo corrido el tiempo suficiente para tener más de una o dos horas del día representadas.
+
+---
+
+## 2026-08-11 — Fase 3: capa Gold (fct_/dim_) + docs
+
+**Se creó:**
+- `seeds/dim_city.csv` — dimensión estática de las 5 ciudades (con `state`, dato que nunca viaja por Kafka/Silver). Primer uso de un dbt **seed** en el proyecto: data de catálogo que no se deriva de ninguna fuente, se declara a mano como CSV versionado.
+- `models/gold/fct_energy_consumption_hourly.sql` — graduación de `int_energy_hourly` a tabla física, con `hour_over_hour_change_mw` como medida derivada nueva.
+- `models/gold/fct_weather_readings.sql` — join real con `dim_city` (enriquece con `state`/`region`, algo que Silver no tiene).
+- `models/gold/fct_hourly_climate_demand_pattern.sql` — graduación directa de `int_hourly_climate_demand_pattern`, sin lógica nueva.
+- `gold.yml`/`seeds.yml` — docs + tests básicos (`not_null`, `unique`, `relationships` de `fct_weather_readings.city` hacia `dim_city`). Tests más completos quedan para la task 19 a propósito.
+
+**Decisión de diseño — por qué solo una dimensión (`dim_city`) y no una por cada atributo:** `grid_region` (siempre "PJME") y `hour_of_day` (0-23) se quedan como columnas directas en sus tablas de hechos en vez de tener su propia `dim_`, porque no tienen ningún atributo descriptivo propio más allá del valor en sí — son "dimensiones degeneradas", un concepto real de modelado dimensional (Kimball). `city` sí ameritó una dimensión de verdad porque `dim_city` le agrega algo que no estaba en los datos de origen (`state`).
+
+**Límite de esta sesión:** sin ejecutar — la verificación real de task 17 y 18 va a quedar confirmada juntas con el próximo `dbt build` (Gold depende de intermediate, así que corre todo el DAG de una vez).
+
+**Actualización — corrió, 30/30 PASS, pero con dos defectos reales encontrados en el log:**
+
+1. **Gold no se estaba escribiendo como Delta.** El log mostró `"A Hive serde table will be created as there is no table provider specified"` para `dim_city` y cada `fct_*` — sin `file_format` explícito, dbt-spark usa el default de Spark (tabla Hive genérica), no Delta. Rompía la consistencia "todo el lakehouse es Delta" sostenida desde Bronze/Silver.
+2. **Ubicación equivocada.** Las tablas quedaron en `transformation/dbt_project/spark-warehouse/` (default de Spark para tablas administradas), no en `streaming/lakehouse/gold/` junto a Bronze/Silver.
+
+**Fix:** `+file_format: delta` y `+location_root: "{{ env_var('LAKEHOUSE_BASE_PATH') }}/gold"` en el bloque `gold:` de `dbt_project.yml` (y en `seeds:` para `dim_city`). También se corrigió un `[WARNING][DeprecationsSummary]` del log: la sintaxis vieja del test `relationships` (sin el wrapper `arguments:`) — dbt Core 2.0 ya está en beta y va a eliminar la sintaxis vieja, mejor corregirlo ahora que se vio que existía.
+
+**Todavía sin confirmar con ejecución:** la combinación `file_format`+`location_root` juntos no se probó todavía. Recomendado `dbt build --full-refresh` para forzar la reconstrucción completa en el lugar/formato nuevo, en vez de depender de que dbt detecte solo el cambio.
+
+**Actualización — `location_root` no es compatible con `table` en dbt-spark/Delta.** Con el catálogo y el filesystem ya limpios, siguió fallando: `org.apache.spark.sql.AnalysisException: Table ... does not support truncate in batch mode`, disparado desde `AtomicReplaceTableAsSelectExec`. Causa real (confirmada con el stack trace completo, no una suposición): la materialización `table` de dbt-spark reconstruye cada corrida con `CREATE OR REPLACE TABLE ... AS SELECT`, que en Spark pasa por el path de DataSourceV2 y requiere que la tabla soporte truncar atómicamente. Delta, cuando la tabla tiene una `LOCATION` explícita (lo que hace `location_root`), no expone esa capacidad por esta vía — es una limitación real de la combinación Spark 3.5 + Delta 3.3.2 + DataSourceV2, no un problema de nuestra config.
+
+**Fix:** se sacó `location_root` de `gold:`/`seeds:` en `dbt_project.yml`, se dejó `file_format: delta`. Gold queda en Delta real (lo importante) pero en la ubicación default de Spark (`transformation/dbt_project/spark-warehouse/`) en vez de junto a Bronze/Silver — trade-off consciente, documentado acá en vez de perseguir la ubicación "prolija" a costa de más fragilidad. `dim_city` (el seed) nunca tuvo este error — el `INSERT` de seeds no pasa por el mismo camino de "replace atómico", así que en teoría podría haber mantenido `location_root` solo ahí, pero se sacó de los dos por consistencia y simplicidad (una sola regla, no dos casos distintos que recordar).
+
+**Actualización — el error persistió idéntico incluso sin `location_root`, con tabla nueva.** Mismo `does not support truncate in batch mode`, mismo `AtomicReplaceTableAsSelectExec`, esta vez con un stack trace completo que confirmó la causa real: no es la ubicación, es que la materialización `table` de dbt-spark siempre reconstruye con `CREATE OR REPLACE TABLE ... AS SELECT`, y Delta 3.3.2/Spark 3.5.8 no soporta esa operación de reemplazo atómico por el path DataSourceV2 que eso dispara — límite real de esta combinación de versiones, reproducido igual en 4 intentos distintos. Decisión final (**ADR-010**): Gold en Parquet nativo, no Delta. Bronze/Silver se quedan en Delta (ahí sí importa: streaming, escrituras incrementales). Se acepta perder ACID/time-travel en Gold porque se reconstruye entera cada corrida, sin concurrencia.
+
+---
+
+## 2026-08-13 — Fase 3: task 19, tests completos sobre Gold
+
+**Se agregó:**
+- `packages.yml` — primer paquete externo de dbt (`dbt-labs/dbt_utils`, versión 1.4.1 verificada como última release en GitHub). Se usa solo por `accepted_range`, que dbt-core no trae de fábrica.
+- `gold.yml` ampliado: `accepted_values` en `grid_region` (siempre "PJME") y `condition` (las categorías reales que devuelve OpenWeatherMap); `dbt_utils.accepted_range` en `consumption_mw`, `temperature_celsius`, `humidity_percentage`, `wind_speed_m_s` — reusando los mismos números de `streaming/common/quality_rules.py`, no reinventados.
+
+**Decisión de diseño:** estos tests repiten, en Gold, las mismas reglas que ya aplica `silver_stream.py` al limpiar y que ya vuelve a chequear `test_silver_quality.py` en Silver. Es intencional, mismo criterio que motivó la task 8 de Fase 2: cada capa se valida a sí misma de forma independiente, sin asumir que la capa de abajo garantiza para siempre que todo sigue bien.
+
+**Actualización — corrió a la primera, 37/37 PASS.** `dbt deps` instaló dbt_utils 1.4.1 sin problema, y los 7 tests nuevos (accepted_values x2, accepted_range x4, más los que ya había) pasaron todos. Fase 3 tiene ahora Bronze→Silver→staging→intermediate→Gold con calidad de datos verificada en cada capa de negocio (Silver con `test_silver_quality.py`, Gold con estos tests de dbt). Task 19 cerrada.
+
+---
+
+## 2026-08-13 — Fase 3: task 20, prototipo agente NL→SQL
+
+**Se agregó (`agents/nl_query_agent/`):**
+- `build_gold_catalog.py` — construye/refresca `transformation/gold.duckdb`: vistas DuckDB sobre las tablas Gold que dbt ya escribió en `spark-warehouse/` (`read_parquet()` para los 3 `fct_*`, extensión `delta`/`delta_scan()` para `dim_city`). No corre dbt ni copia datos, solo declara vistas.
+- `agent.py` — loop de tool-use con la Claude API (`claude-sonnet-5` por default, configurable): recibe una pregunta, el modelo genera SQL vía la tool `run_sql_query`, se valida y ejecuta contra `gold.duckdb` abierta en modo `read_only=True`, y el modelo devuelve una explicación en texto del resultado. Tope duro de `MAX_TOOL_ITERATIONS=5`.
+- `logging_config.py` — copia deliberada del patrón ya usado en `ingestion/common/` y `streaming/common/` (unidades independientes, ver esos módulos).
+- `requirements.txt`, `README.md`.
+- `.env`/`.env.example`: `ANTHROPIC_API_KEY`, `NL_QUERY_AGENT_MODEL`, `SPARK_WAREHOUSE_PATH`, `GOLD_DUCKDB_PATH`.
+- `.gitignore`: `transformation/gold.duckdb` (artefacto generado, se reconstruye con `build_gold_catalog.py`).
+
+**Decisión de diseño — DuckDB en vez de reutilizar dbt-spark/Spark para este agente (ADR-011):** Gold ya es Parquet nativo (ADR-010) más `dim_city` en Delta. Levantar una SparkSession solo para leer eso es sobre-ingeniería — varios segundos de arranque de JVM por consulta, sin ningún beneficio, ya que el agente nunca escribe. DuckDB lee Parquet nativo y Delta (vía su extensión oficial) sin JVM, arranque casi instantáneo. Esto no contradice ADR-009 (que descartó dbt-duckdb para la capa de *transformación*, un problema de escritura): acá el problema es de lectura pura, terreno donde DuckDB es fuerte.
+
+**Cómo se resolvió el guardrail central de `docs/agent-layer-spec.md`** ("el permiso SELECT-only tiene que ser una restricción real de credenciales, no una instrucción de prompt"): `agent.py` abre `gold.duckdb` con `duckdb.connect(path, read_only=True)`. Esa es una restricción real a nivel de motor de datos — cualquier sentencia de escritura que se colara hasta ahí la rechaza DuckDB, no el prompt. Como defensa adicional (no la única), `validate_select_only()` rechaza en código cualquier SQL que no empiece con `SELECT`/`WITH` o que contenga una palabra clave de escritura, antes de ejecutar nada.
+
+**Pendiente de confirmar por el usuario:** correr `pip install -r agents/nl_query_agent/requirements.txt`, completar `ANTHROPIC_API_KEY` en `.env`, correr `python build_gold_catalog.py` y luego `python agent.py "<pregunta>"` con Gold ya construida (`dbt build` corrido al menos una vez). No pude instalar/ejecutar esto en mi sandbox (PyPI bloqueado, sin acceso a los archivos reales de `spark-warehouse/` del usuario) — código escrito y documentado, pero no verificado con una corrida real todavía.
+
+---
+
 ## Plantilla reutilizable para el próximo proyecto
 
 Lo transferible de esta fase, más allá de este proyecto puntual:

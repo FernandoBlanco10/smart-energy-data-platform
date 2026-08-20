@@ -1,0 +1,11 @@
+# DuckDB: motor de consulta para leer la capa Gold (Parquet nativo + la
+# tabla dim_city que quedó en Delta, ver ADR-010). No hace falta JVM/Spark
+# acá — Gold ya está escrita, este agente solo lee. Ver ADR-011.
+duckdb>=1.1.0
+
+# SDK oficial de Anthropic — llamadas a la Claude API con tool-use.
+anthropic>=0.110.0
+
+# Cargar ANTHROPIC_API_KEY y demás variables desde .env, mismo patrón que
+# ingestion/ y streaming/.
+python-dotenv>=1.0.0
