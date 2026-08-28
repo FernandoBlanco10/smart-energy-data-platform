@@ -381,6 +381,37 @@ Fase 2 queda funcionalmente completa: productores → Kafka → Bronze (particio
 
 ---
 
+## 2026-08-24/25 — Fase 3: task 20, corrida real y cierre
+
+**`build_gold_catalog.py` corrió con éxito, confirmado con salida real:**
+```
+Vista 'fct_energy_consumption_hourly' creada sobre .../spark-warehouse/fct_energy_consumption_hourly/*.parquet
+Vista 'fct_weather_readings' creada sobre .../spark-warehouse/fct_weather_readings/*.parquet
+Vista 'fct_hourly_climate_demand_pattern' creada sobre .../spark-warehouse/fct_hourly_climate_demand_pattern/*.parquet
+Vista 'dim_city' creada (Delta) sobre .../spark-warehouse/dim_city
+Catálogo listo en transformation/gold.duckdb. Vistas disponibles: ['dim_city', 'fct_energy_consumption_hourly', 'fct_hourly_climate_demand_pattern', 'fct_weather_readings']
+```
+Confirma: las dependencias (`duckdb`, `anthropic`, `python-dotenv`) instalaron bien, la extensión `delta` de DuckDB se instaló/cargó sin problema, y las 4 vistas se armaron sobre el Gold real (no de prueba).
+
+**`agent.py` llegó hasta la llamada a la Claude API y ahí paró**, con:
+```
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error':
+{'type': 'invalid_request_error', 'message': 'Your credit balance is too
+low to access the Anthropic API...'}}
+```
+Esto en realidad confirma más de lo que rompe: `duckdb.connect(GOLD_DUCKDB_PATH, read_only=True)` no tiró error (la conexión read-only se abrió bien), el cliente `Anthropic()` se armó bien leyendo `ANTHROPIC_API_KEY` del entorno, y la llamada HTTP salió — el único paso que falta es que la cuenta de API tenga saldo cargado. Causa: la suscripción de Claude.ai y el saldo de la API (console.anthropic.com / platform.claude.com) son dos sistemas de facturación separados — tener plan de Claude.ai no carga saldo de API automáticamente.
+
+**Decisión del usuario:** no cargar saldo por ahora — quiere seguir aprendiendo con la estructura actual sin gastar. Se cierra Fase 3 igual, dejando documentado explícitamente qué quedó verificado y qué no:
+
+- ✅ Verificado con salida real: instalación de dependencias, construcción del catálogo DuckDB (`build_gold_catalog.py`), apertura de la conexión `read_only=True`, inicialización del cliente Anthropic, guardrail `validate_select_only()` (probado por separado con 8 casos, ver mensaje de la task 20 original).
+- ⏳ Pendiente de verificar: el loop de tool-use completo (Claude generando SQL real, la herramienta `run_sql_query` ejecutándolo, Claude explicando el resultado) — bloqueado únicamente por falta de saldo en la cuenta de API, no por un error de código. Queda documentado como próximo paso opcional, no como bloqueante para cerrar la fase.
+
+**Decisión tomada para Fase 4 (anotada acá, no ejecutada todavía):** el dashboard se va a construir como sitio estático en GitHub Pages, usando DuckDB-WASM para correr SQL real sobre los Parquet de Gold directo en el navegador del visitante — sin backend, sin costo, y reusando el mismo motor (DuckDB) que ya construimos para el agente NL→SQL. Se descartó Streamlit Community Cloud (más "de mercado" para dashboards de datos, pero no es realmente "una página en GitHub": necesita su propio hosting aparte, y para leer Gold en vivo necesitaría exponer la laptop a internet o commitear snapshots). Se retoma esto al empezar Fase 4.
+
+Task 20 cerrada. Sigue task 21 (aprendizaje propio + tag `v0.3-fase3`).
+
+---
+
 ## Plantilla reutilizable para el próximo proyecto
 
 Lo transferible de esta fase, más allá de este proyecto puntual:

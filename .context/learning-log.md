@@ -41,9 +41,16 @@ Por cada fase, respondé estas cuatro preguntas en 2-4 líneas cada una. No copi
 ## Fase 3 — Transformación con dbt y agente de consulta
 
 - **¿Qué entendí que antes no entendía?**
+  Entendí cómo se toman decisiones importantes para la arquitectura de datos. Comprendí cómo es que para proyectos con más capacidad de datos se consideran cosas importantes como el linaje de los datos, el time travel, ACID y también pensar en qué pasará en el futuro. Por ejemplo, al ser este un proyecto relativamente pequeño, la capa Gold se puede eliminar y volver a crear con datos nuevos, pero si fueran tablas con millones de datos se tendría que pensar en una arquitectura que compruebe qué datos son nuevos, cuáles cambiaron y cuáles se eliminaron para realizar lo correspondiente sin levantar una tabla de millones de registros que pueda tardar mucho tiempo en hacerse y gastar muchos recursos.
+
 - **¿Qué error cometí y cómo lo resolví?**
+  Los errores que tuve fueron más de versiones en los paquetes de las tecnologías que se utilizaron, se resolvió haciendo investigación para actualizarse sobre las capacidades que se tienen actualmente estos paquetes para que no sea un tema el correr el flujo y observar demasiados mensajes de error.
+
 - **¿Qué decisión de arquitectura cuestioné o cambié, y por qué?**
+  La de pasar la capa Gold a Parquet, ya que había problemas con dbt al conectarse con la API de Spark que hacía la operación de truncar la tabla y volverla a crear — Delta no era compatible con esta acción — y se optó mejor por pasar Gold a Parquet ya que es una tabla que se regenera y la información de versionamiento ya se tiene en la capa Silver, por lo que no afecta.
+
 - **Si me preguntan "explicame esta fase en 30 segundos", ¿qué digo?**
+  Esta fase consiste en no solo generar stored procedures de SQL, sino ir más allá: generar algo que nos brinde linaje de datos, versionado de tablas, tests, documentación y orquestación al regenerar la capa. Esto nos ayuda a la mantenibilidad de lo que se ejecuta, de dónde viene la información y hacia dónde va — esta metadata nos da la flexibilidad de implementar NL→SQL que conozca cómo están las relaciones.
 
 ---
 
