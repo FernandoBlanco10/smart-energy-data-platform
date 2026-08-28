@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: stg_weather
+    description: >
+      Weather de Silver, seleccionando y ordenando solo las columnas que le
+      importan al resto del proyecto. Sin lógica de negocio.
+    columns:
+      - name: event_time
+        description: Timestamp UTC del evento, tipado.
+        tests:
+          - not_null
+      - name: city
+        description: Una de las 5 ciudades de la región PJME.
+        tests:
+          - not_null
+
+  - name: stg_energy
+    description: >
+      Energy de Silver, seleccionando solo las columnas relevantes.
+      Sin lógica de negocio.
+    columns:
+      - name: event_time
+        description: Timestamp UTC del evento, tipado.
+        tests:
+          - not_null
+      - name: grid_region
+        description: Siempre "PJME" en este dataset.
+        tests:
+          - not_null

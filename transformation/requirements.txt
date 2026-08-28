@@ -1,0 +1,7 @@
+# dbt-spark[session] trae dbt-core como dependencia transitiva, pero lo
+# fijamos explícito para que la versión quede documentada y reproducible.
+# Versiones verificadas como el último release estable a la fecha (2026-08-09):
+# dbt-core 1.12.0 y dbt-spark 1.11.0, publicados el mismo día — es la pareja
+# pensada para ir junta. dbt-spark requiere Python >=3.10.
+dbt-core==1.12.0
+dbt-spark[session]==1.11.0

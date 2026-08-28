@@ -1,0 +1,14 @@
+version: 2
+
+seeds:
+  - name: dim_city
+    description: >
+      Dimensión de referencia estática: las 5 ciudades de la región PJME
+      East que consulta weather_producer.py, con su estado — un dato que
+      nunca viaja por Kafka/Silver, se declara acá a mano. No es un modelo
+      SQL porque no se deriva de ninguna otra tabla, es data de catálogo.
+    columns:
+      - name: city
+        tests:
+          - not_null
+          - unique

@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: int_energy_hourly
+    description: >
+      Consumo de energy con funciones de ventana (LAG/LEAD hora a hora,
+      promedio móvil 24h) y hour_of_day para comparar contra clima.
+    columns:
+      - name: event_time
+        tests:
+          - not_null
+          - unique
+
+  - name: int_weather_readings
+    description: >
+      Lecturas de weather con funciones de ventana por ciudad (LAG/LEAD,
+      promedio móvil de 5 lecturas) y hour_of_day para comparar contra energy.
+    columns:
+      - name: event_time
+        tests:
+          - not_null
+
+  - name: int_hourly_climate_demand_pattern
+    description: >
+      Comparación de patrones típicos por hora del día (0-23) entre consumo
+      eléctrico y temperatura — no un join por timestamp exacto, ver
+      comentario en el modelo para el porqué. Es la base de la capa Gold.
+    columns:
+      - name: hour_of_day
+        tests:
+          - not_null
+          - unique

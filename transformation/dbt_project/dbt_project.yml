@@ -1,0 +1,57 @@
+# dbt no lee archivos Delta directamente — necesita que algo los registre en
+# el catálogo (Hive metastore) de la SparkSession antes de poder resolver
+# `source()`. Con Databricks + Unity Catalog eso es automático; local, lo
+# resolvemos nosotros acá con on-run-start: antes de cada `dbt run`/`dbt build`,
+# se registran (o refrescan, son idempotentes) las tablas externas que apuntan
+# a las rutas de Silver. Ver docs/architecture-decisions.md ADR-009.
+#
+# LAKEHOUSE_BASE_PATH tiene que ser la misma ruta absoluta que usa
+# streaming/silver_stream.py (ver .env). Con barras "/", no "\", porque Spark
+# arma esto como una URI, no como un path de Windows.
+
+name: 'smart_energy'
+version: '1.0.0'
+config-version: 2
+
+profile: 'smart_energy'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+on-run-start:
+  - "CREATE TABLE IF NOT EXISTS silver_weather USING DELTA LOCATION '{{ env_var(\"LAKEHOUSE_BASE_PATH\") }}/silver/weather'"
+  - "CREATE TABLE IF NOT EXISTS silver_energy USING DELTA LOCATION '{{ env_var(\"LAKEHOUSE_BASE_PATH\") }}/silver/energy'"
+
+models:
+  smart_energy:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    gold:
+      +materialized: table
+      # NO es Delta acá, a propósito — ver ADR-010 (docs/architecture-
+      # decisions.md) y build-log.md 2026-08-13 para la investigación
+      # completa. Resumen: dbt-spark reconstruye "table" con
+      # CREATE OR REPLACE TABLE AS SELECT, y Delta (vía DataSourceV2, en
+      # esta combinación Spark 3.5.8 + Delta 3.3.2) no soporta esa
+      # operación ("does not support truncate in batch mode") — se
+      # reprodujo igual con y sin location_root, con tabla nueva y vieja,
+      # así que no es un problema de nuestra config, es una incompatibilidad
+      # real de esta versión. Parquet nativo (no Hive-serde genérico, por
+      # eso file_format explícito) sí soporta CREATE OR REPLACE sin problema.
+      # Se acepta perder ACID/time-travel en Gold porque acá no hace falta:
+      # se reconstruye entera cada corrida, sin escrituras concurrentes.
+      +file_format: parquet
+
+seeds:
+  smart_energy:
+    +file_format: delta

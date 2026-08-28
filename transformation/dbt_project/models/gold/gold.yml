@@ -1,0 +1,99 @@
+version: 2
+
+models:
+  - name: fct_energy_consumption_hourly
+    description: >
+      Tabla de hechos: consumo eléctrico de la red PJME por hora, con
+      variación hora a hora y promedio móvil de 24 horas. Grano: una fila
+      por hora de consumo real. Lista para dashboard/agente NL→SQL.
+    columns:
+      - name: event_time
+        description: Hora del consumo (grano de la tabla).
+        tests:
+          - not_null
+          - unique
+      - name: grid_region
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["PJME"]
+      - name: consumption_mw
+        description: >
+          Consumo en megavatios. Ya se validó este rango en Silver
+          (quality_rules.py); acá se re-chequea de forma independiente,
+          mismo espíritu que test_silver_quality.py en Fase 2 — no confiar
+          en que la limpieza de arriba funcionó, volver a probarlo.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 200000
+
+  - name: fct_weather_readings
+    description: >
+      Tabla de hechos: cada lectura de clima por ciudad, enriquecida con
+      estado/región desde dim_city. Grano: una fila por lectura por ciudad.
+    columns:
+      - name: event_time
+        tests:
+          - not_null
+      - name: city
+        description: Clave foránea hacia dim_city.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_city')
+                field: city
+      - name: temperature_celsius
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: -40
+                max_value: 55
+      - name: humidity_percentage
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: wind_speed_m_s
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: condition
+        description: Categoría principal del clima, según OpenWeatherMap.
+        tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - "Thunderstorm"
+                  - "Drizzle"
+                  - "Rain"
+                  - "Snow"
+                  - "Mist"
+                  - "Smoke"
+                  - "Haze"
+                  - "Dust"
+                  - "Fog"
+                  - "Sand"
+                  - "Ash"
+                  - "Squall"
+                  - "Tornado"
+                  - "Clear"
+                  - "Clouds"
+
+  - name: fct_hourly_climate_demand_pattern
+    description: >
+      Tabla de hechos agregada: patrón típico de consumo vs. temperatura
+      por hora del día (0-23) — no por fecha exacta, ver el comentario en
+      el modelo intermedio para el porqué. Grano: una fila por hour_of_day.
+    columns:
+      - name: hour_of_day
+        tests:
+          - not_null
+          - unique

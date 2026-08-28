@@ -1,0 +1,33 @@
+# "source" acá no apunta a un archivo — apunta a las tablas silver_weather /
+# silver_energy que on-run-start (dbt_project.yml) registra en el catálogo
+# de la SparkSession antes de correr cualquier modelo. database: default
+# porque no creamos una base de datos propia — usamos el catálogo por
+# defecto de Spark local (Hive metastore embebido en derby).
+
+version: 2
+
+sources:
+  - name: silver
+    database: default
+    schema: default
+    tables:
+      - name: silver_weather
+        description: >
+          Tabla Delta de Silver/weather, escrita por streaming/silver_stream.py.
+          Ya deduplicada (watermark de 10 min) y filtrada a rangos físicos válidos.
+        columns:
+          - name: event_time
+            description: Timestamp UTC del evento, tipado (no string).
+          - name: city
+            description: Una de las 5 ciudades de la región PJME.
+
+      - name: silver_energy
+        description: >
+          Tabla Delta de Silver/energy, escrita por streaming/silver_stream.py.
+          Deduplicada sin watermark (stream acotado, ver build-log.md 2026-08-05)
+          y filtrada a rangos físicos válidos.
+        columns:
+          - name: event_time
+            description: Timestamp UTC del evento, tipado (no string).
+          - name: grid_region
+            description: Siempre "PJME" en este dataset.

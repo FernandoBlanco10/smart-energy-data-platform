@@ -1,0 +1,15 @@
+# Copiá este archivo a profiles.yml (mismo directorio) y ajustá lo que haga
+# falta. profiles.yml SÍ va gitignoreado — mismo patrón que .env/.env.example:
+# ejemplo versionado, archivo real con tu configuración local no.
+#
+# method: session -> dbt levanta su propia SparkSession embebida, sin
+# servidor externo. Ver ADR-009 (docs/architecture-decisions.md).
+
+smart_energy:
+  target: dev
+  outputs:
+    dev:
+      type: spark
+      method: session
+      schema: default
+      host: NA

@@ -1,0 +1,7 @@
+# dbt_utils: paquete oficial de dbt Labs con tests/macros genéricos que no
+# vienen en dbt-core. Lo usamos acá solo para accepted_range — poder
+# re-chequear en Gold los mismos rangos físicos de quality_rules.py, sin
+# reescribir esa lógica en SQL a mano.
+packages:
+  - package: dbt-labs/dbt_utils
+    version: [">=1.4.0", "<2.0.0"]
